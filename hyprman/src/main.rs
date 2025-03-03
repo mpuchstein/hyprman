@@ -1,11 +1,16 @@
-use std::{env, io};
-use std::io::Read;
-use async_std::os::unix::net::UnixStream;
-use async_std::prelude::*;
-use async_std::task::spawn;
+use std::{env, thread};
+use std::io::{BufRead, BufReader};
+use std::os::unix::net::UnixStream;
+use serde::{Serialize, Deserialize};
 
-async fn create_socket(socket_path : String) -> UnixStream {
-    return match UnixStream::connect(socket_path).await{
+#[derive(Serialize, Deserialize)]
+struct Event{
+    event: String,
+    data: String,
+}
+
+fn create_socket(socket_path : String) -> UnixStream {
+    return match UnixStream::connect(socket_path){
         Ok(socket) => {
             println!("Connected to socket: {:?}", socket.peer_addr());
             socket
@@ -14,12 +19,16 @@ async fn create_socket(socket_path : String) -> UnixStream {
     };
 }
 
-async fn handle_line_socket2(line : String){
-    println!("{}", line);
+fn handle_event(event : String){
+    let parts = event.split(">>").collect::<Vec<&str>>();
+    let ev = Event {
+        event: parts[0].parse().unwrap(),
+        data: parts[1].parse().unwrap()
+    };
+    println!("{}", serde_json::to_string(&ev).unwrap());
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let env_var_xdg_runtime_dir = "XDG_RUNTIME_DIR";
     let env_var_hyprland_instance_signature = "HYPRLAND_INSTANCE_SIGNATURE";
     let mut hypr_rundir_path: String = match env::var(env_var_xdg_runtime_dir){
@@ -36,15 +45,10 @@ async fn main() {
     let socket2_path = format!("{}/.socket2.sock", hypr_rundir_path);
     println!("Using socket1 path: {}", socket1_path);
     println!("Using socket2 path: {}", socket2_path);
-    let mut socket1 = create_socket(socket1_path).await;
-    let mut socket2= create_socket(socket2_path);
-    let mut buffer = String::new();
-    //TODO: Read from UnixSocket instead from stdin
-    loop{
-        io::stdin().read_line(&mut buffer).expect("Could not read line from standard input");
-        println!("{} bytes read", buffer.len());
-        let line = buffer.trim();
-        spawn(handle_line_socket2(line.to_string()));
-        buffer.clear();
+    // let socket1 = create_socket(socket1_path);
+    let socket2= create_socket(socket2_path);
+    let stream = BufReader::new(socket2);
+    for line in stream.lines() {
+        thread::spawn(|| handle_event(line.unwrap()));
     }
 }

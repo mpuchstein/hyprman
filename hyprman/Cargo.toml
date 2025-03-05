@@ -6,3 +6,9 @@ edition = "2024"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+log = "0.4.26"
+signal-hook = "0.3.17"
+toml = "0.8.20"
+env_logger = "0.11.6"
+daemonize = "0.5.0"
+libc = "0.2.170"

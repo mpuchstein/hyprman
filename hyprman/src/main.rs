@@ -1,3 +1,10 @@
+use daemonize::Daemonize;
+use libc::wchar_t;
+use log::{error, info};
+use serde::{Deserialize, Serialize};
+use signal_hook::{consts::TERM_SIGNALS, iterator::Signals};
+use std::collections::HashMap;
+use std::io::Read;
 use std::{
     collections::HashSet,
     env,
@@ -10,218 +17,149 @@ use std::{
     thread,
     time::Duration,
 };
-use std::io::Read;
-use daemonize::Daemonize;
-use log::{error, info};
-use serde::{Deserialize, Serialize};
-use signal_hook::{consts::TERM_SIGNALS, iterator::Signals};
 
-/// === Hyprland Event Types and Parsing ===
+/// === Hyprland Event Types ===
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "event", content = "data")]
 enum HyprlandEvent {
-    Workspace { workspace_name: String },
-    WorkspaceV2 { workspace_id: u8, workspace_name: String },
-    FocusedMon { monitor_name: String, workspace_name: String },
-    FocusedMonV2 { monitor_name: String, workspace_id: u8 },
-    ActiveWindow { window_class: String, window_title: String },
-    ActiveWindowV2 { window_address: String },
-    Fullscreen { status: u8 },
-    MonitorRemoved { monitor_name: String },
-    MonitorAdded { monitor_name: String },
-    MonitorAddedV2 { monitor_id: u8, monitor_name: String, monitor_description: String },
-    CreateWorkspace { workspace_name: String },
-    CreateWorkspaceV2 { workspace_id: u8, workspace_name: String },
-    DestroyWorkspace { workspace_name: String },
-    DestroyWorkspaceV2 { workspace_id: u8, workspace_name: String },
-    MoveWorkspace { workspace_name: String, monitor_name: String },
-    MoveWorkspaceV2 { workspace_id: u8, workspace_name: String, monitor_name: String },
-    RenameWorkspace { workspace_id: u8, new_name: String },
-    ActiveSpecial { workspace_name: String, monitor_name: String },
-    ActiveLayout { keyboard_name: String, layout_name: String },
-    OpenWindow { window_address: String, workspace_name: String, window_class: String, window_title: String },
-    CloseWindow { window_address: String },
-    MoveWindow { window_address: String, workspace_name: String },
-    MoveWindowV2 { window_address: String, workspace_id: u8, workspace_name: String },
-    OpenLayer { namespace: String },
-    CloseLayer { namespace: String },
-    Submap { submap_name: String },
-    ChangeFloatingMode { window_address: String, floating: u8 },
-    Urgent { window_address: String },
-    Screencast { state: u8, owner: u8 },
-    WindowTitle { window_address: String },
-    WindowTitleV2 { window_address: String, window_title: String },
-    ToggleGroup { toggle_status: u8, window_addresses: Vec<String> },
-    MoveIntoGroup { window_address: String },
-    MoveOutOfGroup { window_address: String },
-    IgnoreGroupLock { value: u8 },
-    LockGroups { value: u8 },
+    Workspace {
+        workspace_name: String,
+    },
+    WorkspaceV2 {
+        workspace_id: u8,
+        workspace_name: String,
+    },
+    FocusedMon {
+        monitor_name: String,
+        workspace_name: String,
+    },
+    FocusedMonV2 {
+        monitor_name: String,
+        workspace_id: u8,
+    },
+    ActiveWindow {
+        window_class: String,
+        window_title: String,
+    },
+    ActiveWindowV2 {
+        window_address: String,
+    },
+    Fullscreen {
+        status: u8,
+    },
+    MonitorRemoved {
+        monitor_name: String,
+    },
+    MonitorAdded {
+        monitor_name: String,
+    },
+    MonitorAddedV2 {
+        monitor_id: u8,
+        monitor_name: String,
+        monitor_description: String,
+    },
+    CreateWorkspace {
+        workspace_name: String,
+    },
+    CreateWorkspaceV2 {
+        workspace_id: u8,
+        workspace_name: String,
+    },
+    DestroyWorkspace {
+        workspace_name: String,
+    },
+    DestroyWorkspaceV2 {
+        workspace_id: u8,
+        workspace_name: String,
+    },
+    MoveWorkspace {
+        workspace_name: String,
+        monitor_name: String,
+    },
+    MoveWorkspaceV2 {
+        workspace_id: u8,
+        workspace_name: String,
+        monitor_name: String,
+    },
+    RenameWorkspace {
+        workspace_id: u8,
+        new_name: String,
+    },
+    ActiveSpecial {
+        workspace_name: String,
+        monitor_name: String,
+    },
+    ActiveLayout {
+        keyboard_name: String,
+        layout_name: String,
+    },
+    OpenWindow {
+        window_address: String,
+        workspace_name: String,
+        window_class: String,
+        window_title: String,
+    },
+    CloseWindow {
+        window_address: String,
+    },
+    MoveWindow {
+        window_address: String,
+        workspace_name: String,
+    },
+    MoveWindowV2 {
+        window_address: String,
+        workspace_id: u8,
+        workspace_name: String,
+    },
+    OpenLayer {
+        namespace: String,
+    },
+    CloseLayer {
+        namespace: String,
+    },
+    Submap {
+        submap_name: String,
+    },
+    ChangeFloatingMode {
+        window_address: String,
+        floating: u8,
+    },
+    Urgent {
+        window_address: String,
+    },
+    Screencast {
+        state: u8,
+        owner: u8,
+    },
+    WindowTitle {
+        window_address: String,
+    },
+    WindowTitleV2 {
+        window_address: String,
+        window_title: String,
+    },
+    ToggleGroup {
+        toggle_status: u8,
+        window_addresses: Vec<String>,
+    },
+    MoveIntoGroup {
+        window_address: String,
+    },
+    MoveOutOfGroup {
+        window_address: String,
+    },
+    IgnoreGroupLock {
+        value: u8,
+    },
+    LockGroups {
+        value: u8,
+    },
     ConfigReloaded,
-    Pin { window_address: String, pin_state: u8 },
-}
-
-fn parse_event_line(line: &str) -> Result<HyprlandEvent, Box<dyn Error>> {
-    let line = line.trim();
-    let mut parts = line.split(">>");
-    let event_name = parts.next().ok_or("Missing event name")?;
-    let data = parts.next().unwrap_or("").trim();
-
-    match event_name {
-        "workspace" => Ok(HyprlandEvent::Workspace { workspace_name: data.to_string() }),
-        "workspacev2" => {
-            let mut fields = data.split(',');
-            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
-            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
-            Ok(HyprlandEvent::WorkspaceV2 { workspace_id, workspace_name })
-        }
-        "focusedmon" => {
-            let mut fields = data.split(',');
-            let monitor_name = fields.next().ok_or("Missing monitor_name")?.to_string();
-            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
-            Ok(HyprlandEvent::FocusedMon { monitor_name, workspace_name })
-        }
-        "focusedmonv2" => {
-            let mut fields = data.split(',');
-            let monitor_name = fields.next().ok_or("Missing monitor_name")?.to_string();
-            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
-            Ok(HyprlandEvent::FocusedMonV2 { monitor_name, workspace_id })
-        }
-        "activewindow" => {
-            let mut fields = data.split(',');
-            let window_class = fields.next().ok_or("Missing window_class")?.to_string();
-            let window_title = fields.next().ok_or("Missing window_title")?.to_string();
-            Ok(HyprlandEvent::ActiveWindow { window_class, window_title })
-        }
-        "activewindowv2" => Ok(HyprlandEvent::ActiveWindowV2 { window_address: data.to_string() }),
-        "fullscreen" => {
-            let status = data.parse::<u8>()?;
-            Ok(HyprlandEvent::Fullscreen { status })
-        }
-        "monitorremoved" => Ok(HyprlandEvent::MonitorRemoved { monitor_name: data.to_string() }),
-        "monitoradded" => Ok(HyprlandEvent::MonitorAdded { monitor_name: data.to_string() }),
-        "monitoraddedv2" => {
-            let mut fields = data.split(',');
-            let monitor_id = fields.next().ok_or("Missing monitor_id")?.parse::<u8>()?;
-            let monitor_name = fields.next().ok_or("Missing monitor_name")?.to_string();
-            let monitor_description = fields.next().ok_or("Missing monitor_description")?.to_string();
-            Ok(HyprlandEvent::MonitorAddedV2 { monitor_id, monitor_name, monitor_description })
-        }
-        "createworkspace" => Ok(HyprlandEvent::CreateWorkspace { workspace_name: data.to_string() }),
-        "createworkspacev2" => {
-            let mut fields = data.split(',');
-            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
-            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
-            Ok(HyprlandEvent::CreateWorkspaceV2 { workspace_id, workspace_name })
-        }
-        "destroyworkspace" => Ok(HyprlandEvent::DestroyWorkspace { workspace_name: data.to_string() }),
-        "destroyworkspacev2" => {
-            let mut fields = data.split(',');
-            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
-            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
-            Ok(HyprlandEvent::DestroyWorkspaceV2 { workspace_id, workspace_name })
-        }
-        "moveworkspace" => {
-            let mut fields = data.split(',');
-            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
-            let monitor_name = fields.next().ok_or("Missing monitor_name")?.to_string();
-            Ok(HyprlandEvent::MoveWorkspace { workspace_name, monitor_name })
-        }
-        "moveworkspacev2" => {
-            let mut fields = data.split(',');
-            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
-            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
-            let monitor_name = fields.next().ok_or("Missing monitor_name")?.to_string();
-            Ok(HyprlandEvent::MoveWorkspaceV2 { workspace_id, workspace_name, monitor_name })
-        }
-        "renameworkspace" => {
-            let mut fields = data.split(',');
-            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
-            let new_name = fields.next().ok_or("Missing new_name")?.to_string();
-            Ok(HyprlandEvent::RenameWorkspace { workspace_id, new_name })
-        }
-        "activespecial" => {
-            let mut fields = data.split(',');
-            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
-            let monitor_name = fields.next().ok_or("Missing monitor_name")?.to_string();
-            Ok(HyprlandEvent::ActiveSpecial { workspace_name, monitor_name })
-        }
-        "activelayout" => {
-            let mut fields = data.split(',');
-            let keyboard_name = fields.next().ok_or("Missing keyboard_name")?.to_string();
-            let layout_name = fields.next().ok_or("Missing layout_name")?.to_string();
-            Ok(HyprlandEvent::ActiveLayout { keyboard_name, layout_name })
-        }
-        "openwindow" => {
-            let mut fields = data.split(',');
-            let window_address = fields.next().ok_or("Missing window_address")?.to_string();
-            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
-            let window_class = fields.next().ok_or("Missing window_class")?.to_string();
-            let window_title = fields.next().ok_or("Missing window_title")?.to_string();
-            Ok(HyprlandEvent::OpenWindow { window_address, workspace_name, window_class, window_title })
-        }
-        "closewindow" => Ok(HyprlandEvent::CloseWindow { window_address: data.to_string() }),
-        "movewindow" => {
-            let mut fields = data.split(',');
-            let window_address = fields.next().ok_or("Missing window_address")?.to_string();
-            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
-            Ok(HyprlandEvent::MoveWindow { window_address, workspace_name })
-        }
-        "movewindowv2" => {
-            let mut fields = data.split(',');
-            let window_address = fields.next().ok_or("Missing window_address")?.to_string();
-            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
-            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
-            Ok(HyprlandEvent::MoveWindowV2 { window_address, workspace_id, workspace_name })
-        }
-        "openlayer" => Ok(HyprlandEvent::OpenLayer { namespace: data.to_string() }),
-        "closelayer" => Ok(HyprlandEvent::CloseLayer { namespace: data.to_string() }),
-        "submap" => Ok(HyprlandEvent::Submap { submap_name: data.to_string() }),
-        "changefloatingmode" => {
-            let mut fields = data.split(',');
-            let window_address = fields.next().ok_or("Missing window_address")?.to_string();
-            let floating = fields.next().ok_or("Missing floating")?.parse::<u8>()?;
-            Ok(HyprlandEvent::ChangeFloatingMode { window_address, floating })
-        }
-        "urgent" => Ok(HyprlandEvent::Urgent { window_address: data.to_string() }),
-        "screencast" => {
-            let mut fields = data.split(',');
-            let state = fields.next().ok_or("Missing state")?.parse::<u8>()?;
-            let owner = fields.next().ok_or("Missing owner")?.parse::<u8>()?;
-            Ok(HyprlandEvent::Screencast { state, owner })
-        }
-        "windowtitle" => Ok(HyprlandEvent::WindowTitle { window_address: data.to_string() }),
-        "windowtitlev2" => {
-            let mut fields = data.split(',');
-            let window_address = fields.next().ok_or("Missing window_address")?.to_string();
-            let window_title = fields.next().ok_or("Missing window_title")?.to_string();
-            Ok(HyprlandEvent::WindowTitleV2 { window_address, window_title })
-        }
-        "togglegroup" => {
-            let mut fields = data.split(',');
-            let toggle_status = fields.next().ok_or("Missing toggle_status")?.parse::<u8>()?;
-            let window_addresses: Vec<String> = fields.map(|s| s.to_string()).collect();
-            Ok(HyprlandEvent::ToggleGroup { toggle_status, window_addresses })
-        }
-        "moveintogroup" => Ok(HyprlandEvent::MoveIntoGroup { window_address: data.to_string() }),
-        "moveoutofgroup" => Ok(HyprlandEvent::MoveOutOfGroup { window_address: data.to_string() }),
-        "ignoregrouplock" => {
-            let value = data.parse::<u8>()?;
-            Ok(HyprlandEvent::IgnoreGroupLock { value })
-        }
-        "lockgroups" => {
-            let value = data.parse::<u8>()?;
-            Ok(HyprlandEvent::LockGroups { value })
-        }
-        "configreloaded" => Ok(HyprlandEvent::ConfigReloaded),
-        "pin" => {
-            let mut fields = data.split(',');
-            let window_address = fields.next().ok_or("Missing window_address")?.to_string();
-            let pin_state = fields.next().ok_or("Missing pin_state")?.parse::<u8>()?;
-            Ok(HyprlandEvent::Pin { window_address, pin_state })
-        }
-        _ => Err(format!("Unknown event type: {}", event_name).into()),
-    }
+    Pin {
+        window_address: String,
+        pin_state: u8,
+    },
 }
 
 /// === Utility: Extract event type string for filtering ===
@@ -267,6 +205,316 @@ fn event_type(event: &HyprlandEvent) -> &'static str {
         HyprlandEvent::ConfigReloaded => "configreloaded",
         HyprlandEvent::Pin { .. } => "pin",
     }
+}
+
+/// === Hyprland Events parsing ===
+
+fn parse_event_line(line: &str) -> Result<HyprlandEvent, Box<dyn Error>> {
+    let line = line.trim();
+    let mut parts = line.split(">>");
+    let event_name = parts.next().ok_or("Missing event name")?;
+    let data = parts.next().unwrap_or("").trim();
+
+    match event_name {
+        "workspace" => Ok(HyprlandEvent::Workspace {
+            workspace_name: data.to_string(),
+        }),
+        "workspacev2" => {
+            let mut fields = data.split(',');
+            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
+            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
+            Ok(HyprlandEvent::WorkspaceV2 {
+                workspace_id,
+                workspace_name,
+            })
+        }
+        "focusedmon" => {
+            let mut fields = data.split(',');
+            let monitor_name = fields.next().ok_or("Missing monitor_name")?.to_string();
+            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
+            Ok(HyprlandEvent::FocusedMon {
+                monitor_name,
+                workspace_name,
+            })
+        }
+        "focusedmonv2" => {
+            let mut fields = data.split(',');
+            let monitor_name = fields.next().ok_or("Missing monitor_name")?.to_string();
+            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
+            Ok(HyprlandEvent::FocusedMonV2 {
+                monitor_name,
+                workspace_id,
+            })
+        }
+        "activewindow" => {
+            let mut fields = data.split(',');
+            let window_class = fields.next().ok_or("Missing window_class")?.to_string();
+            let window_title = fields.next().ok_or("Missing window_title")?.to_string();
+            Ok(HyprlandEvent::ActiveWindow {
+                window_class,
+                window_title,
+            })
+        }
+        "activewindowv2" => Ok(HyprlandEvent::ActiveWindowV2 {
+            window_address: data.to_string(),
+        }),
+        "fullscreen" => {
+            let status = data.parse::<u8>()?;
+            Ok(HyprlandEvent::Fullscreen { status })
+        }
+        "monitorremoved" => Ok(HyprlandEvent::MonitorRemoved {
+            monitor_name: data.to_string(),
+        }),
+        "monitoradded" => Ok(HyprlandEvent::MonitorAdded {
+            monitor_name: data.to_string(),
+        }),
+        "monitoraddedv2" => {
+            let mut fields = data.split(',');
+            let monitor_id = fields.next().ok_or("Missing monitor_id")?.parse::<u8>()?;
+            let monitor_name = fields.next().ok_or("Missing monitor_name")?.to_string();
+            let monitor_description = fields
+                .next()
+                .ok_or("Missing monitor_description")?
+                .to_string();
+            Ok(HyprlandEvent::MonitorAddedV2 {
+                monitor_id,
+                monitor_name,
+                monitor_description,
+            })
+        }
+        "createworkspace" => Ok(HyprlandEvent::CreateWorkspace {
+            workspace_name: data.to_string(),
+        }),
+        "createworkspacev2" => {
+            let mut fields = data.split(',');
+            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
+            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
+            Ok(HyprlandEvent::CreateWorkspaceV2 {
+                workspace_id,
+                workspace_name,
+            })
+        }
+        "destroyworkspace" => Ok(HyprlandEvent::DestroyWorkspace {
+            workspace_name: data.to_string(),
+        }),
+        "destroyworkspacev2" => {
+            let mut fields = data.split(',');
+            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
+            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
+            Ok(HyprlandEvent::DestroyWorkspaceV2 {
+                workspace_id,
+                workspace_name,
+            })
+        }
+        "moveworkspace" => {
+            let mut fields = data.split(',');
+            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
+            let monitor_name = fields.next().ok_or("Missing monitor_name")?.to_string();
+            Ok(HyprlandEvent::MoveWorkspace {
+                workspace_name,
+                monitor_name,
+            })
+        }
+        "moveworkspacev2" => {
+            let mut fields = data.split(',');
+            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
+            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
+            let monitor_name = fields.next().ok_or("Missing monitor_name")?.to_string();
+            Ok(HyprlandEvent::MoveWorkspaceV2 {
+                workspace_id,
+                workspace_name,
+                monitor_name,
+            })
+        }
+        "renameworkspace" => {
+            let mut fields = data.split(',');
+            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
+            let new_name = fields.next().ok_or("Missing new_name")?.to_string();
+            Ok(HyprlandEvent::RenameWorkspace {
+                workspace_id,
+                new_name,
+            })
+        }
+        "activespecial" => {
+            let mut fields = data.split(',');
+            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
+            let monitor_name = fields.next().ok_or("Missing monitor_name")?.to_string();
+            Ok(HyprlandEvent::ActiveSpecial {
+                workspace_name,
+                monitor_name,
+            })
+        }
+        "activelayout" => {
+            let mut fields = data.split(',');
+            let keyboard_name = fields.next().ok_or("Missing keyboard_name")?.to_string();
+            let layout_name = fields.next().ok_or("Missing layout_name")?.to_string();
+            Ok(HyprlandEvent::ActiveLayout {
+                keyboard_name,
+                layout_name,
+            })
+        }
+        "openwindow" => {
+            let mut fields = data.split(',');
+            let window_address = fields.next().ok_or("Missing window_address")?.to_string();
+            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
+            let window_class = fields.next().ok_or("Missing window_class")?.to_string();
+            let window_title = fields.next().ok_or("Missing window_title")?.to_string();
+            Ok(HyprlandEvent::OpenWindow {
+                window_address,
+                workspace_name,
+                window_class,
+                window_title,
+            })
+        }
+        "closewindow" => Ok(HyprlandEvent::CloseWindow {
+            window_address: data.to_string(),
+        }),
+        "movewindow" => {
+            let mut fields = data.split(',');
+            let window_address = fields.next().ok_or("Missing window_address")?.to_string();
+            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
+            Ok(HyprlandEvent::MoveWindow {
+                window_address,
+                workspace_name,
+            })
+        }
+        "movewindowv2" => {
+            let mut fields = data.split(',');
+            let window_address = fields.next().ok_or("Missing window_address")?.to_string();
+            let workspace_id = fields.next().ok_or("Missing workspace_id")?.parse::<u8>()?;
+            let workspace_name = fields.next().ok_or("Missing workspace_name")?.to_string();
+            Ok(HyprlandEvent::MoveWindowV2 {
+                window_address,
+                workspace_id,
+                workspace_name,
+            })
+        }
+        "openlayer" => Ok(HyprlandEvent::OpenLayer {
+            namespace: data.to_string(),
+        }),
+        "closelayer" => Ok(HyprlandEvent::CloseLayer {
+            namespace: data.to_string(),
+        }),
+        "submap" => Ok(HyprlandEvent::Submap {
+            submap_name: data.to_string(),
+        }),
+        "changefloatingmode" => {
+            let mut fields = data.split(',');
+            let window_address = fields.next().ok_or("Missing window_address")?.to_string();
+            let floating = fields.next().ok_or("Missing floating")?.parse::<u8>()?;
+            Ok(HyprlandEvent::ChangeFloatingMode {
+                window_address,
+                floating,
+            })
+        }
+        "urgent" => Ok(HyprlandEvent::Urgent {
+            window_address: data.to_string(),
+        }),
+        "screencast" => {
+            let mut fields = data.split(',');
+            let state = fields.next().ok_or("Missing state")?.parse::<u8>()?;
+            let owner = fields.next().ok_or("Missing owner")?.parse::<u8>()?;
+            Ok(HyprlandEvent::Screencast { state, owner })
+        }
+        "windowtitle" => Ok(HyprlandEvent::WindowTitle {
+            window_address: data.to_string(),
+        }),
+        "windowtitlev2" => {
+            let mut fields = data.split(',');
+            let window_address = fields.next().ok_or("Missing window_address")?.to_string();
+            let window_title = fields.next().ok_or("Missing window_title")?.to_string();
+            Ok(HyprlandEvent::WindowTitleV2 {
+                window_address,
+                window_title,
+            })
+        }
+        "togglegroup" => {
+            let mut fields = data.split(',');
+            let toggle_status = fields
+                .next()
+                .ok_or("Missing toggle_status")?
+                .parse::<u8>()?;
+            let window_addresses: Vec<String> = fields.map(|s| s.to_string()).collect();
+            Ok(HyprlandEvent::ToggleGroup {
+                toggle_status,
+                window_addresses,
+            })
+        }
+        "moveintogroup" => Ok(HyprlandEvent::MoveIntoGroup {
+            window_address: data.to_string(),
+        }),
+        "moveoutofgroup" => Ok(HyprlandEvent::MoveOutOfGroup {
+            window_address: data.to_string(),
+        }),
+        "ignoregrouplock" => {
+            let value = data.parse::<u8>()?;
+            Ok(HyprlandEvent::IgnoreGroupLock { value })
+        }
+        "lockgroups" => {
+            let value = data.parse::<u8>()?;
+            Ok(HyprlandEvent::LockGroups { value })
+        }
+        "configreloaded" => Ok(HyprlandEvent::ConfigReloaded),
+        "pin" => {
+            let mut fields = data.split(',');
+            let window_address = fields.next().ok_or("Missing window_address")?.to_string();
+            let pin_state = fields.next().ok_or("Missing pin_state")?.parse::<u8>()?;
+            Ok(HyprlandEvent::Pin {
+                window_address,
+                pin_state,
+            })
+        }
+        _ => Err(format!("Unknown event type: {}", event_name).into()),
+    }
+}
+
+/// === Structs for Interaction with Socket1
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Workspace {
+    id: u32,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    monitor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    monitor_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    windows: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    has_fullscreen: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_window: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_window_title: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Client {
+    address: String,
+    mapped: bool,
+    hidden: bool,
+    at: (i32, i32),
+    size: (i32, i32),
+    workspace: Workspace,
+    floating: bool,
+    pseudo: bool,
+    monitor: u8,
+    class: String,
+    title: String,
+    initial_class: String,
+    initial_title: String,
+    pid: u32,
+    xwayland: bool,
+    pinned: bool,
+    fullscreen: i32,
+    fullscreen_client: i32,
+    grouped: Vec<String>,
+    tags: Vec<String>,
+    swallowing: String,
+    #[serde(rename = "focusHistoryID")]
+    focus_history_id: i32,
+    inhibiting_idle: bool,
 }
 
 /// === Client Subscription Infrastructure ===
@@ -316,7 +564,8 @@ fn client_handler(stream: UnixStream, subscriptions: Arc<Mutex<Vec<ClientHandle>
         return;
     }
     let subscription_line = subscription_line.trim();
-    let subscription = if subscription_line.is_empty() || subscription_line.to_lowercase() == "all" {
+    let subscription = if subscription_line.is_empty() || subscription_line.to_lowercase() == "all"
+    {
         Subscription::All
     } else {
         let filters: HashSet<String> = subscription_line
@@ -332,7 +581,10 @@ fn client_handler(stream: UnixStream, subscriptions: Arc<Mutex<Vec<ClientHandle>
 
     {
         let mut subs = subscriptions.lock().unwrap();
-        subs.push(ClientHandle { sender: tx, subscription });
+        subs.push(ClientHandle {
+            sender: tx,
+            subscription,
+        });
     }
 
     // Loop and write events to the client.
@@ -401,9 +653,8 @@ fn hyprland_event_thread(subscriptions: Arc<Mutex<Vec<ClientHandle>>>) {
 fn client_server_thread(client_socket_path: String, subscriptions: Arc<Mutex<Vec<ClientHandle>>>) {
     // Remove existing socket file if present.
     let _ = fs::remove_file(&client_socket_path);
-    let listener = UnixListener::bind(&client_socket_path).unwrap_or_else(|e| {
-        panic!("Failed to bind client socket {}: {}", client_socket_path, e)
-    });
+    let listener = UnixListener::bind(&client_socket_path)
+        .unwrap_or_else(|e| panic!("Failed to bind client socket {}: {}", client_socket_path, e));
     info!("Client server listening on {}", client_socket_path);
 
     for stream in listener.incoming() {
@@ -418,9 +669,8 @@ fn client_server_thread(client_socket_path: String, subscriptions: Arc<Mutex<Vec
 }
 
 fn create_socket(socket_path: &str) -> UnixStream {
-    UnixStream::connect(socket_path).unwrap_or_else(|err| {
-        panic!("Could not connect to socket {}: {}", socket_path, err)
-    })
+    UnixStream::connect(socket_path)
+        .unwrap_or_else(|err| panic!("Could not connect to socket {}: {}", socket_path, err))
 }
 
 /// The main daemon functionality: spawn threads, handle signals, etc.
@@ -478,7 +728,10 @@ fn run_client(config: &Config, subscription: &str) {
                 eprintln!("Failed to send subscription: {}", e);
                 std::process::exit(1);
             }
-            println!("Subscribed to '{}' events. Waiting for events...", subscription);
+            println!(
+                "Subscribed to '{}' events. Waiting for events...",
+                subscription
+            );
 
             let reader = BufReader::new(stream);
             for line in reader.lines() {
@@ -498,64 +751,84 @@ fn run_client(config: &Config, subscription: &str) {
     }
 }
 
-fn run_activewindow_client(config: &Config) {
-    let hypr_rundir_path = get_hypr_rundir_path();
-    info!("Using hypr runtime directory: {}", hypr_rundir_path);
+/// Prints the active window as json
 
-    let socket1_path = format!("{}/.socket1.sock", hypr_rundir_path);
-    info!("Using hypr socket2 path: {}", socket1_path);
-    match UnixStream::connect(&config.client_socket_path) {
+fn run_activewindow_client(config: &Config) {
+    let subscription_line = "activewindowv2,fullscreen,closewindow,movewindow,changefloatingmode,moveintogroup,moveoutofgroup,togglegroup,pin,windowtitle\n";
+    info!("Using subscription line: {}", subscription_line);
+    let event_reader = match UnixStream::connect(&config.client_socket_path) {
         Ok(mut stream) => {
-            let subscription_line = "activewindowv2,openwindow,closewindow,movewindow\n";
             if let Err(e) = stream.write_all(subscription_line.as_bytes()) {
                 eprintln!("Failed to send subscription: {}", e);
                 std::process::exit(1);
             }
             println!("Successfully connected to daemon.");
-            match UnixStream::connect(&socket1_path) {
-                Ok(mut stream1) => {
-                    let query = "activewindow";
-                    let reader = BufReader::new(stream);
-                    for line in reader.lines() {
-                        match line {
-                            Ok(msg) => {
-                                println!("{}", msg);
-                                if let Err(e) = stream1.write_all(query.as_bytes()) {
-                                    eprintln!("Failed to send query: {}", e);
-                                    std::process::exit(1);
-                                }
-                                println!("Successfully sent query to daemon.");
-                                let mut response = String::new();
-                                stream1.read_to_string(&mut response).unwrap();
-                                println!("{}", response);
-                            },
-                            Err(e) => {
-                                eprintln!("Error reading from daemon: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Failed to connect to socket1: {}", e);
-                    std::process::exit(1);
-                }
-
-            }
+            BufReader::new(stream)
         }
         Err(e) => {
             eprintln!("Failed to connect to daemon. Is it running? Error: {}", e);
             std::process::exit(1);
         }
+    };
+    let mut clients = query_socket(QueryModes::Clients);
+    for event_line in event_reader.lines() {
+        let event: HyprlandEvent =
+            serde_json::from_str(&event_line.unwrap()).expect("Failed to parse event");
+        match event {
+            HyprlandEvent::ActiveWindowV2 { window_address } => {
+                if let Some(client) = clients.get(&format!("0x{}", window_address)) {
+                    println!("{:#?}", serde_json::to_string(&client).unwrap());
+                } else {
+                    clients = query_socket(QueryModes::Clients);
+                    if let Some(client) = clients.get(&format!("0x{}", window_address)) {
+                        println!("{}", serde_json::to_string(&client).unwrap());
+                    } else {
+                        eprintln!("Failed to find window address {}", window_address);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            _ => {
+                clients = query_socket(QueryModes::Clients);
+            }
+        }
     }
+}
+
+enum QueryModes {
+    Clients,
+    Workspaces,
+}
+
+/// === Helper functions for clients that also query socket1 ===
+fn query_socket(mode: QueryModes) -> HashMap<String, Client> {
+    let hypr_rundir_path = get_hypr_rundir_path();
+    info!("Using hypr runtime directory: {}", hypr_rundir_path);
+    let socket_path = format!("{}/.socket.sock", hypr_rundir_path);
+    info!("Using hypr socket1 path: {}", socket_path);
+    let query = match mode {
+        QueryModes::Clients => "j/clients",
+        QueryModes::Workspaces => "j/workspaces",
+    };
+    info!("Using query: {}", query);
+    let mut stream = create_socket(&socket_path);
+    stream.write_all(query.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let clients: Vec<Client> = serde_json::from_str(&response).expect("Failed to parse response");
+    info!("Successfully queried {} active clients", clients.len());
+    stream.flush().expect("Failed to flush stream");
+    clients
+        .into_iter()
+        .map(|c| (c.address.clone(), c))
+        .collect()
 }
 
 /// === Daemon Control Functions ===
 
 fn stop_daemon() -> Result<(), Box<dyn Error>> {
     // Compute pid file path from $XDG_RUNTIME_DIR/hyprman/
-    let xdg_runtime_dir = env::var("XDG_RUNTIME_DIR")
-        .expect("XDG_RUNTIME_DIR not set");
+    let xdg_runtime_dir = env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR not set");
     let hyprman_dir = format!("{}/hyprman", xdg_runtime_dir);
     let pid_file_path = format!("{}/hyprman.pid", hyprman_dir);
     let pid_str = fs::read_to_string(&pid_file_path)?;
@@ -585,7 +858,9 @@ fn print_help() {
     println!("  -d, --daemon             Run as daemon");
     println!("  -r, --restart            Restart the daemon");
     println!("  -k, --kill               Stop the daemon");
-    println!("  -f, --filter [event]     Run in client mode, subscribing to [event] (default: all)");
+    println!(
+        "  -f, --filter [event]     Run in client mode, subscribing to [event] (default: all)"
+    );
     println!("  -h, --help               Show this help message");
 }
 
@@ -600,12 +875,10 @@ fn main() {
     env_logger::init();
 
     // Ensure $XDG_RUNTIME_DIR/hyprman/ exists.
-    let xdg_runtime_dir = env::var("XDG_RUNTIME_DIR")
-        .expect("XDG_RUNTIME_DIR not set");
+    let xdg_runtime_dir = env::var("XDG_RUNTIME_DIR").expect("XDG_RUNTIME_DIR not set");
     let hyprman_dir = format!("{}/hyprman", xdg_runtime_dir);
     if fs::metadata(&hyprman_dir).is_err() {
-        fs::create_dir_all(&hyprman_dir)
-            .expect("Failed to create hyprman runtime directory");
+        fs::create_dir_all(&hyprman_dir).expect("Failed to create hyprman runtime directory");
     }
     // If the socket path from the config is relative, interpret it relative to hyprman_dir.
     if !config.client_socket_path.starts_with("/") {

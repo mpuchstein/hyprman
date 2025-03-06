@@ -777,7 +777,7 @@ fn run_activewindow_client(config: &Config) {
         match event {
             HyprlandEvent::ActiveWindowV2 { window_address } => {
                 if let Some(client) = clients.get(&format!("0x{}", window_address)) {
-                    println!("{:#?}", serde_json::to_string(&client).unwrap());
+                    println!("{}", serde_json::to_string(&client).unwrap());
                 } else {
                     clients = query_socket(QueryModes::Clients);
                     if let Some(client) = clients.get(&format!("0x{}", window_address)) {

@@ -1,5 +1,4 @@
 use daemonize::Daemonize;
-use libc::wchar_t;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use signal_hook::{consts::TERM_SIGNALS, iterator::Signals};
@@ -472,8 +471,10 @@ fn parse_event_line(line: &str) -> Result<HyprlandEvent, Box<dyn Error>> {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 struct Workspace {
-    id: u32,
+    id: u8,
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     monitor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -770,7 +771,7 @@ fn run_activewindow_client(config: &Config) {
             std::process::exit(1);
         }
     };
-    let mut clients = query_socket(QueryModes::Clients);
+    let mut clients = query_clients();
     for event_line in event_reader.lines() {
         let event: HyprlandEvent =
             serde_json::from_str(&event_line.unwrap()).expect("Failed to parse event");
@@ -779,7 +780,7 @@ fn run_activewindow_client(config: &Config) {
                 if let Some(client) = clients.get(&format!("0x{}", window_address)) {
                     println!("{}", serde_json::to_string(&client).unwrap());
                 } else {
-                    clients = query_socket(QueryModes::Clients);
+                    clients = query_clients();
                     if let Some(client) = clients.get(&format!("0x{}", window_address)) {
                         println!("{}", serde_json::to_string(&client).unwrap());
                     } else {
@@ -789,39 +790,99 @@ fn run_activewindow_client(config: &Config) {
                 }
             }
             _ => {
-                clients = query_socket(QueryModes::Clients);
+                clients = query_clients();
+                let active_client = query_active_client();
+                println!("{}", serde_json::to_string(&active_client).unwrap());
             }
         }
     }
 }
 
-enum QueryModes {
-    Clients,
-    Workspaces,
-}
+/// Prints the workspaces as json highlighting the active one
 
+fn run_workspaces_client(config: &Config) {
+    let subscription_line = "workspacev2,focusedmonv2,createworkspacev2,destoryworkspacev2,moveworkspacev2,renameworkspace,activespecial\n";
+    info!("Using subscription line: {}", subscription_line);
+    let event_reader = match UnixStream::connect(&config.client_socket_path) {
+        Ok(mut stream) => {
+            if let Err(e) = stream.write_all(subscription_line.as_bytes()) {
+                eprintln!("Failed to send subscription: {}", e);
+                std::process::exit(1);
+            }
+            println!("Successfully connected to daemon.");
+            BufReader::new(stream)
+        }
+        Err(e) => {
+            eprintln!("Failed to connect to daemon. Is it running? Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let mut workspaces = query_workspaces();
+    for event_line in event_reader.lines() {
+        let event: HyprlandEvent =
+            serde_json::from_str(&event_line.unwrap()).expect("Failed to parse event");
+        let mut active_id :u8 = 0;
+        match event {
+            HyprlandEvent::WorkspaceV2 { workspace_id, .. }
+            | HyprlandEvent::FocusedMonV2 { workspace_id, .. } => {
+                active_id = workspace_id;
+            }
+            _ => {
+                workspaces = query_workspaces();
+                if active_id < 1 {
+                    active_id = query_active_workspace().id;
+                }
+            }
+        }
+        let mut workspaces_tmp = workspaces.clone();
+        let mut workspace = workspaces_tmp
+            .iter_mut()
+            .find(|w| w.id == active_id)
+            .unwrap();
+        workspace.active = Some(true);
+        let serialized =
+            serde_json::to_string(&workspaces_tmp).expect("Failed to serialize workspaces");
+        println!("{}", serialized);
+    }
+}
 /// === Helper functions for clients that also query socket1 ===
-fn query_socket(mode: QueryModes) -> HashMap<String, Client> {
+fn query_socket(query: &str) -> String {
+    info!("Using query: {}", query);
     let hypr_rundir_path = get_hypr_rundir_path();
     info!("Using hypr runtime directory: {}", hypr_rundir_path);
     let socket_path = format!("{}/.socket.sock", hypr_rundir_path);
     info!("Using hypr socket1 path: {}", socket_path);
-    let query = match mode {
-        QueryModes::Clients => "j/clients",
-        QueryModes::Workspaces => "j/workspaces",
-    };
-    info!("Using query: {}", query);
     let mut stream = create_socket(&socket_path);
     stream.write_all(query.as_bytes()).unwrap();
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
-    let clients: Vec<Client> = serde_json::from_str(&response).expect("Failed to parse response");
-    info!("Successfully queried {} active clients", clients.len());
     stream.flush().expect("Failed to flush stream");
+    response
+}
+fn query_active_client() -> Client {
+    let query = "j/activewindow";
+    let response = query_socket(query);
+    serde_json::from_str(&response).expect("Failed to parse active window response")
+}
+fn query_clients() -> HashMap<String, Client> {
+    let query = "j/clients";
+    let response = query_socket(query);
+    let clients: Vec<Client> =
+        serde_json::from_str(&response).expect("Failed to parse clients response");
     clients
         .into_iter()
         .map(|c| (c.address.clone(), c))
         .collect()
+}
+fn query_active_workspace() -> Workspace {
+    let query = "j/activeworkspace";
+    let response = query_socket(query);
+    serde_json::from_str(&response).expect("Failed to parse active window response")
+}
+fn query_workspaces() -> Vec<Workspace> {
+    let query = "j/workspaces";
+    let response = query_socket(query);
+    serde_json::from_str(&response).expect("Failed to parse response")
 }
 
 /// === Daemon Control Functions ===
@@ -937,6 +998,9 @@ fn main() {
             }
             "-a" | "--activewindow" => {
                 run_activewindow_client(&config);
+            }
+            "-w" | "--workspaces" => {
+                run_workspaces_client(&config);
             }
             "-h" | "--help" => {
                 print_help();

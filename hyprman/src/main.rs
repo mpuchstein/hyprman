@@ -915,14 +915,18 @@ fn restart_daemon() -> Result<(), Box<dyn Error>> {
 
 /// Print usage help text.
 fn print_help() {
-    println!("Usage:");
-    println!("  -d, --daemon             Run as daemon");
-    println!("  -r, --restart            Restart the daemon");
-    println!("  -k, --kill               Stop the daemon");
-    println!(
-        "  -f, --filter [event]     Run in client mode, subscribing to [event] (default: all)"
-    );
-    println!("  -h, --help               Show this help message");
+    println!("Usage: hyprman [OPTIONS]");
+    println!();
+    println!("Options:");
+    println!("  -d, --daemon          Run Hyprman as a daemon.");
+    println!("  -r, --restart         Restart the running daemon.");
+    println!("  -k, --kill            Stop the running daemon.");
+    println!("  -f, --filter [FILTER] Run client mode with a subscription filter (default: all).");
+    println!("  -a, --activewindow    Run client mode to track active window changes.");
+    println!("  -w, --workspaces      Run client mode to track workspace events.");
+    println!("  -h, --help            Show this help message.");
+    println!();
+    println!("If no options are provided, Hyprman runs in client mode with the 'all' subscription.");
 }
 
 /// === Main Entry Point: Mode Selection Based on Command‑Line Arguments ===

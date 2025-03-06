@@ -10,7 +10,7 @@ use std::{
     thread,
     time::Duration,
 };
-
+use std::io::Read;
 use daemonize::Daemonize;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
@@ -296,6 +296,14 @@ fn load_config(path: &str) -> Config {
     toml::from_str(&content).expect("Failed to parse config file")
 }
 
+fn get_hypr_rundir_path() -> String {
+    let xdg_runtime_dir = env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| panic!("Environment variable XDG_RUNTIME_DIR is not set"));
+    let hypr_instance_signature = env::var("HYPRLAND_INSTANCE_SIGNATURE")
+        .unwrap_or_else(|_| panic!("Environment variable HYPRLAND_INSTANCE_SIGNATURE is not set"));
+    format!("{}/hypr/{}", xdg_runtime_dir, hypr_instance_signature)
+}
+
 /// === Daemon Mode Functions ===
 
 fn client_handler(stream: UnixStream, subscriptions: Arc<Mutex<Vec<ClientHandle>>>) {
@@ -350,11 +358,7 @@ fn client_handler(stream: UnixStream, subscriptions: Arc<Mutex<Vec<ClientHandle>
 }
 
 fn hyprland_event_thread(subscriptions: Arc<Mutex<Vec<ClientHandle>>>) {
-    let xdg_runtime_dir = env::var("XDG_RUNTIME_DIR")
-        .unwrap_or_else(|_| panic!("Environment variable XDG_RUNTIME_DIR is not set"));
-    let hypr_instance_signature = env::var("HYPRLAND_INSTANCE_SIGNATURE")
-        .unwrap_or_else(|_| panic!("Environment variable HYPRLAND_INSTANCE_SIGNATURE is not set"));
-    let hypr_rundir_path = format!("{}/hypr/{}", xdg_runtime_dir, hypr_instance_signature);
+    let hypr_rundir_path = get_hypr_rundir_path();
     info!("Using hypr runtime directory: {}", hypr_rundir_path);
 
     let socket2_path = format!("{}/.socket2.sock", hypr_rundir_path);
@@ -494,6 +498,58 @@ fn run_client(config: &Config, subscription: &str) {
     }
 }
 
+fn run_activewindow_client(config: &Config) {
+    let hypr_rundir_path = get_hypr_rundir_path();
+    info!("Using hypr runtime directory: {}", hypr_rundir_path);
+
+    let socket1_path = format!("{}/.socket1.sock", hypr_rundir_path);
+    info!("Using hypr socket2 path: {}", socket1_path);
+    match UnixStream::connect(&config.client_socket_path) {
+        Ok(mut stream) => {
+            let subscription_line = "activewindowv2,openwindow,closewindow,movewindow\n";
+            if let Err(e) = stream.write_all(subscription_line.as_bytes()) {
+                eprintln!("Failed to send subscription: {}", e);
+                std::process::exit(1);
+            }
+            println!("Successfully connected to daemon.");
+            match UnixStream::connect(&socket1_path) {
+                Ok(mut stream1) => {
+                    let query = "activewindow";
+                    let reader = BufReader::new(stream);
+                    for line in reader.lines() {
+                        match line {
+                            Ok(msg) => {
+                                println!("{}", msg);
+                                if let Err(e) = stream1.write_all(query.as_bytes()) {
+                                    eprintln!("Failed to send query: {}", e);
+                                    std::process::exit(1);
+                                }
+                                println!("Successfully sent query to daemon.");
+                                let mut response = String::new();
+                                stream1.read_to_string(&mut response).unwrap();
+                                println!("{}", response);
+                            },
+                            Err(e) => {
+                                eprintln!("Error reading from daemon: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to connect to socket1: {}", e);
+                    std::process::exit(1);
+                }
+
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to connect to daemon. Is it running? Error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
 /// === Daemon Control Functions ===
 
 fn stop_daemon() -> Result<(), Box<dyn Error>> {
@@ -599,12 +655,15 @@ fn main() {
             }
             "-f" | "--filter" => {
                 // Client mode with a subscription filter.
-                let query = if args.len() > 2 {
+                let filter = if args.len() > 2 {
                     args[2].clone()
                 } else {
                     "all".to_string()
                 };
-                run_client(&config, &query);
+                run_client(&config, &filter);
+            }
+            "-a" | "--activewindow" => {
+                run_activewindow_client(&config);
             }
             "-h" | "--help" => {
                 print_help();

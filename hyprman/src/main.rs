@@ -763,8 +763,11 @@ fn run_activewindow_client(config: &Config) {
     let mut clients = query_clients();
     print_empty_client();
     for event_line in event_reader.lines() {
+        let event_line = event_line.unwrap();
+        println!("Read eventline: {}", event_line.clone());
         let event: HyprlandEvent =
-            serde_json::from_str(&event_line.unwrap()).expect("Failed to parse event");
+            serde_json::from_str(&event_line).expect("Failed to parse event");
+        println!("Parsed event: {}", serde_json::to_string(&event.clone()).unwrap());
         match event {
             HyprlandEvent::ActiveWindowV2 { window_address } => {
                 if window_address != "" {
@@ -851,8 +854,8 @@ fn connect_unix_socket(config: &Config, subscription_line: String) -> BufReader<
     }
 }
 
-fn print_empty_client(){
-    let client = Client {
+fn create_empty_client() -> Client {
+    Client {
         address: "".to_string(),
         mapped: false,
         hidden: false,
@@ -886,7 +889,10 @@ fn print_empty_client(){
         swallowing: "".to_string(),
         focus_history_id: 0,
         inhibiting_idle: false,
-    };
+    }
+}
+fn print_empty_client(){
+    let client = create_empty_client();
     println!("{}", serde_json::to_string(&client).unwrap());
 }
 
@@ -906,7 +912,15 @@ fn query_socket(query: &str) -> String {
 fn query_active_client() -> Client {
     let query = "j/activewindow";
     let response = query_socket(query);
-    serde_json::from_str(&response).expect("Failed to parse active window response")
+    if response != "{}" {
+        serde_json::from_str(&response).unwrap_or_else(|e| {
+            eprintln!("Failed to parse active window: {}", e);
+            std::process::exit(1);
+        })
+    } else {
+        info!("Active window is empty.");
+        create_empty_client()
+    }
 }
 fn query_clients() -> HashMap<String, Client> {
     let query = "j/clients";

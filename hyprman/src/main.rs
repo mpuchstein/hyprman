@@ -764,10 +764,10 @@ fn run_activewindow_client(config: &Config) {
     print_empty_client();
     for event_line in event_reader.lines() {
         let event_line = event_line.unwrap();
-        println!("Read eventline: {}", event_line.clone());
+        info!("Read eventline: {}", event_line.clone());
         let event: HyprlandEvent =
             serde_json::from_str(&event_line).expect("Failed to parse event");
-        println!("Parsed event: {}", serde_json::to_string(&event.clone()).unwrap());
+        info!("Parsed event: {}", serde_json::to_string(&event.clone()).unwrap());
         match event {
             HyprlandEvent::ActiveWindowV2 { window_address } => {
                 if window_address != "" {

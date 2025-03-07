@@ -761,6 +761,7 @@ fn run_activewindow_client(config: &Config) {
     info!("Using subscription line: {}", subscription_line);
     let event_reader = connect_unix_socket(config, subscription_line);
     let mut clients = query_clients();
+    print_empty_client();
     for event_line in event_reader.lines() {
         let event: HyprlandEvent =
             serde_json::from_str(&event_line.unwrap()).expect("Failed to parse event");
@@ -780,42 +781,7 @@ fn run_activewindow_client(config: &Config) {
                     }
                 } else {
                     info!("No active window.");
-                    let client = Client {
-                        address: "".to_string(),
-                        mapped: false,
-                        hidden: false,
-                        at: (0, 0),
-                        size: (0, 0),
-                        workspace: Workspace {
-                            id: 0,
-                            name: "".to_string(),
-                            active: None,
-                            monitor: None,
-                            monitor_id: None,
-                            windows: None,
-                            has_fullscreen: None,
-                            last_window: None,
-                            last_window_title: None,
-                        },
-                        floating: false,
-                        pseudo: false,
-                        monitor: 0,
-                        class: "".to_string(),
-                        title: "".to_string(),
-                        initial_class: "".to_string(),
-                        initial_title: "".to_string(),
-                        pid: 0,
-                        xwayland: false,
-                        pinned: false,
-                        fullscreen: 0,
-                        fullscreen_client: 0,
-                        grouped: vec![],
-                        tags: vec![],
-                        swallowing: "".to_string(),
-                        focus_history_id: 0,
-                        inhibiting_idle: false,
-                    };
-                    println!("{}", serde_json::to_string(&client).unwrap());
+                    print_empty_client();
                 }
             }
             _ => {
@@ -875,7 +841,7 @@ fn connect_unix_socket(config: &Config, subscription_line: String) -> BufReader<
                 eprintln!("Failed to send subscription: {}", e);
                 std::process::exit(1);
             }
-            println!("Successfully connected to daemon.");
+            info!("Successfully connected to daemon.");
             BufReader::new(stream)
         }
         Err(e) => {
@@ -884,6 +850,46 @@ fn connect_unix_socket(config: &Config, subscription_line: String) -> BufReader<
         }
     }
 }
+
+fn print_empty_client(){
+    let client = Client {
+        address: "".to_string(),
+        mapped: false,
+        hidden: false,
+        at: (0, 0),
+        size: (0, 0),
+        workspace: Workspace {
+            id: 0,
+            name: "".to_string(),
+            active: None,
+            monitor: None,
+            monitor_id: None,
+            windows: None,
+            has_fullscreen: None,
+            last_window: None,
+            last_window_title: None,
+        },
+        floating: false,
+        pseudo: false,
+        monitor: 0,
+        class: "".to_string(),
+        title: "".to_string(),
+        initial_class: "".to_string(),
+        initial_title: "".to_string(),
+        pid: 0,
+        xwayland: false,
+        pinned: false,
+        fullscreen: 0,
+        fullscreen_client: 0,
+        grouped: vec![],
+        tags: vec![],
+        swallowing: "".to_string(),
+        focus_history_id: 0,
+        inhibiting_idle: false,
+    };
+    println!("{}", serde_json::to_string(&client).unwrap());
+}
+
 fn query_socket(query: &str) -> String {
     info!("Using query: {}", query);
     let hypr_rundir_path = get_hypr_rundir_path();

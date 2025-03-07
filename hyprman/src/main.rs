@@ -755,38 +755,67 @@ fn run_client(config: &Config, subscription: &str) {
 /// Prints the active window as json
 
 fn run_activewindow_client(config: &Config) {
-    let subscription_line = "activewindowv2,fullscreen,closewindow,movewindow,changefloatingmode,moveintogroup,moveoutofgroup,togglegroup,pin,windowtitle\n";
+    let subscription_line = String::from(
+        "activewindowv2,fullscreen,closewindow,movewindow,changefloatingmode,moveintogroup,moveoutofgroup,togglegroup,pin,windowtitle\n",
+    );
     info!("Using subscription line: {}", subscription_line);
-    let event_reader = match UnixStream::connect(&config.client_socket_path) {
-        Ok(mut stream) => {
-            if let Err(e) = stream.write_all(subscription_line.as_bytes()) {
-                eprintln!("Failed to send subscription: {}", e);
-                std::process::exit(1);
-            }
-            println!("Successfully connected to daemon.");
-            BufReader::new(stream)
-        }
-        Err(e) => {
-            eprintln!("Failed to connect to daemon. Is it running? Error: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let event_reader = connect_unix_socket(config, subscription_line);
     let mut clients = query_clients();
     for event_line in event_reader.lines() {
         let event: HyprlandEvent =
             serde_json::from_str(&event_line.unwrap()).expect("Failed to parse event");
         match event {
             HyprlandEvent::ActiveWindowV2 { window_address } => {
-                if let Some(client) = clients.get(&format!("0x{}", window_address)) {
-                    println!("{}", serde_json::to_string(&client).unwrap());
-                } else {
-                    clients = query_clients();
+                if window_address != "" {
                     if let Some(client) = clients.get(&format!("0x{}", window_address)) {
                         println!("{}", serde_json::to_string(&client).unwrap());
                     } else {
-                        eprintln!("Failed to find window address {}", window_address);
-                        std::process::exit(1);
+                        clients = query_clients();
+                        if let Some(client) = clients.get(&format!("0x{}", window_address)) {
+                            println!("{}", serde_json::to_string(&client).unwrap());
+                        } else {
+                            eprintln!("Failed to find window address {}", window_address);
+                            std::process::exit(1);
+                        }
                     }
+                } else {
+                    info!("No active window.");
+                    let client = Client {
+                        address: "".to_string(),
+                        mapped: false,
+                        hidden: false,
+                        at: (0, 0),
+                        size: (0, 0),
+                        workspace: Workspace {
+                            id: 0,
+                            name: "".to_string(),
+                            active: None,
+                            monitor: None,
+                            monitor_id: None,
+                            windows: None,
+                            has_fullscreen: None,
+                            last_window: None,
+                            last_window_title: None,
+                        },
+                        floating: false,
+                        pseudo: false,
+                        monitor: 0,
+                        class: "".to_string(),
+                        title: "".to_string(),
+                        initial_class: "".to_string(),
+                        initial_title: "".to_string(),
+                        pid: 0,
+                        xwayland: false,
+                        pinned: false,
+                        fullscreen: 0,
+                        fullscreen_client: 0,
+                        grouped: vec![],
+                        tags: vec![],
+                        swallowing: "".to_string(),
+                        focus_history_id: 0,
+                        inhibiting_idle: false,
+                    };
+                    println!("{}", serde_json::to_string(&client).unwrap());
                 }
             }
             _ => {
@@ -801,27 +830,18 @@ fn run_activewindow_client(config: &Config) {
 /// Prints the workspaces as json highlighting the active one
 
 fn run_workspaces_client(config: &Config) {
-    let subscription_line = "workspacev2,focusedmonv2,createworkspacev2,destoryworkspacev2,moveworkspacev2,renameworkspace,activespecial\n";
+    let subscription_line = String::from(
+        "workspacev2,focusedmonv2,createworkspacev2,destoryworkspacev2,moveworkspacev2,renameworkspace,activespecial,openwindow,closewindow\n",
+    );
     info!("Using subscription line: {}", subscription_line);
-    let event_reader = match UnixStream::connect(&config.client_socket_path) {
-        Ok(mut stream) => {
-            if let Err(e) = stream.write_all(subscription_line.as_bytes()) {
-                eprintln!("Failed to send subscription: {}", e);
-                std::process::exit(1);
-            }
-            println!("Successfully connected to daemon.");
-            BufReader::new(stream)
-        }
-        Err(e) => {
-            eprintln!("Failed to connect to daemon. Is it running? Error: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let event_reader = connect_unix_socket(config, subscription_line);
     let mut workspaces = query_workspaces();
+    let serialized = serde_json::to_string(&workspaces).expect("Failed to serialize workspaces");
+    println!("{}", serialized);
     for event_line in event_reader.lines() {
         let event: HyprlandEvent =
             serde_json::from_str(&event_line.unwrap()).expect("Failed to parse event");
-        let mut active_id :u8 = 0;
+        let mut active_id: u8 = 0;
         match event {
             HyprlandEvent::WorkspaceV2 { workspace_id, .. }
             | HyprlandEvent::FocusedMonV2 { workspace_id, .. } => {
@@ -847,6 +867,23 @@ fn run_workspaces_client(config: &Config) {
     }
 }
 /// === Helper functions for clients that also query socket1 ===
+
+fn connect_unix_socket(config: &Config, subscription_line: String) -> BufReader<UnixStream> {
+    match UnixStream::connect(&config.client_socket_path) {
+        Ok(mut stream) => {
+            if let Err(e) = stream.write_all(subscription_line.as_bytes()) {
+                eprintln!("Failed to send subscription: {}", e);
+                std::process::exit(1);
+            }
+            println!("Successfully connected to daemon.");
+            BufReader::new(stream)
+        }
+        Err(e) => {
+            eprintln!("Failed to connect to daemon. Is it running? Error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
 fn query_socket(query: &str) -> String {
     info!("Using query: {}", query);
     let hypr_rundir_path = get_hypr_rundir_path();
@@ -927,7 +964,9 @@ fn print_help() {
     println!("  -w, --workspaces      Run client mode to track workspace events.");
     println!("  -h, --help            Show this help message.");
     println!();
-    println!("If no options are provided, Hyprman runs in client mode with the 'all' subscription.");
+    println!(
+        "If no options are provided, Hyprman runs in client mode with the 'all' subscription."
+    );
 }
 
 /// === Main Entry Point: Mode Selection Based on Command‑Line Arguments ===

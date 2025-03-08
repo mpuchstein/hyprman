@@ -729,7 +729,7 @@ fn run_client(config: &Config, subscription: &str) {
                 eprintln!("Failed to send subscription: {}", e);
                 std::process::exit(1);
             }
-            println!(
+            info!(
                 "Subscribed to '{}' events. Waiting for events...",
                 subscription
             );

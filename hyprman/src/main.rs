@@ -825,7 +825,7 @@ fn run_workspaces_client(config: &Config) {
         }
         let mut workspaces_tmp = workspaces.clone();
         workspaces_tmp.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut workspace = workspaces_tmp
+        let workspace = workspaces_tmp
             .iter_mut()
             .find(|w| w.id == active_id)
             .unwrap();
